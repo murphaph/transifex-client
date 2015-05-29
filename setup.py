@@ -15,7 +15,7 @@ package_data = {
     'txclib': ['*.pem'],
 }
 
-scripts = ['tx']
+scripts = ['philTx']
 
 install_requires = []
 extra_args = {}
@@ -34,21 +34,21 @@ if platform.system() == 'Windows':
             self.compiled_files.append('txclib/cacert.pem')
 
     extra_args = {
-        'console': ['tx'],
+        'console': ['philTx'],
         'options': {'py2exe': {'bundle_files': 1}},
         'zipfile': None,
         'cmdclass': {'py2exe': MediaCollector},
     }
 
 setup(
-    name="transifex-client",
+    name="server-transifex-client",
     version=get_version(),
     scripts=scripts,
-    description="A command line interface for Transifex",
+    description="A custom command line interface for Transifex for the Server project",
     long_description=long_description,
-    author="Transifex",
-    author_email="admin@transifex.com",
-    url="https://www.transifex.com",
+    author="Original Author: Transifex. Modified by Philip Murphy",
+    author_email="murphaph@gmail.com",
+    url="https://github.com/murphaph",
     license="GPLv2",
     dependency_links=[
     ],

@@ -7,6 +7,7 @@ import fnmatch
 import datetime
 import time
 import ssl
+import tempfile
 
 try:
     import configparser
@@ -39,6 +40,12 @@ class Project(object):
         """
         Initialize the Project attributes.
         """
+        # A holder for the temporary file object used in un-escaping
+        self.temp_file_object = None
+
+        # The set of files modified by the pull operation
+        self.modified_local_files = set([])
+
         if init:
             self._init(path_to_tx)
 
@@ -126,7 +133,8 @@ class Project(object):
         return txrc
 
     def _get_transifex_file(self, directory=None):
-        """Fetch the path of the .transifexrc file.
+        """
+        Fetch the path of the .transifexrc file.
 
         It is in the home directory of the user by default.
         """
@@ -387,6 +395,8 @@ class Project(object):
             url = 'pull_translator_file'
         elif mode == 'developer':
             url = 'pull_developer_file'
+        elif mode == 'onlytranslated':
+            url = 'pull_onlytranslated_file'
         else:
             url = 'pull_file'
 
@@ -396,6 +406,8 @@ class Project(object):
             project_slug, resource_slug = resource.split('.', 1)
             files = self.get_resource_files(resource)
             slang = self.get_resource_option(resource, 'source_lang')
+            #fetch double_escape_apostrophes property and convert it to boolean
+            double_escape_apostrophes = self.get_resource_option(resource, 'double_escape_apostrophes') == "true"
             sfile = self.get_source_file(resource)
             lang_map = self.get_resource_lang_mapping(resource)
             host = self.get_resource_host(resource)
@@ -503,11 +515,21 @@ class Project(object):
                     else:
                         logger.error(e)
                         continue
-                base_dir = os.path.split(local_file)[0]
-                mkdir_p(base_dir)
-                fd = open(local_file, 'wb')
-                fd.write(r.encode(charset))
-                fd.close()
+                try:
+                    base_dir = os.path.split(local_file)[0]
+                    mkdir_p(base_dir)
+                    fd = open(local_file, 'wb')
+                    fd.write(r.encode(charset))
+                    fd.close()
+                except Exception as e:
+                    if isinstance(e, IOError):
+                        raise
+                    else:
+                        logger.error(e)
+                else:
+                    # File was successfully opened, written to and closed, so log the modified file and an 'double_escape_apostrophes' flag
+                    tup = (double_escape_apostrophes, local_file)
+                    self.modified_local_files.add(tup)
 
             if new_translations:
                 msg = "Pulling new translations for resource %s (source: %s)"
@@ -551,6 +573,52 @@ class Project(object):
                     fd = open(local_file, 'wb')
                     fd.write(r.encode(charset))
                     fd.close()
+        # If any files have been modifed locally after the pull operation, we escape them (if needs be) according to their type/use
+        if self.modified_local_files:
+            self._escape_modified_files(self.modified_local_files)
+
+    def _escape_modified_files(self, modified_local_files):
+        """Correctly Escape the modified files for use in our codebase."""
+        logger.info("Escaping modified properties files")
+        for file in modified_local_files:
+            try:
+                f = open(file[1],'r')
+                filedata = f.read()
+                f.close()
+
+                # Remove the \ escaping other special characters: they do not cause problems in our application and make reading the
+                # properties files more difficult. It is also very inconsistent: sometimes these characters are escaped in a file and
+                # sometimes not. Let's try to remove the inconsistencies ;-)
+                newdata = filedata.replace("\!","!")
+                newdata = newdata.replace("\#","#")
+                newdata = newdata.replace("\=","=")
+                newdata = newdata.replace("\:",":")
+                newdata = newdata.replace("&amp;","&") #First unescape any already escaped ampersands
+                newdata = newdata.replace(" & "," &amp; ") #Now escape all ampersands
+
+                double_escape_apostrophes = file[0]
+                # Escape the apostrophes only in marked resources:
+
+                if double_escape_apostrophes:
+                    # Slight hack to be used while the new client is used initially. Catches *already escaped* apostrophes and unescapes
+                    # them first. This can probably be retired at some stage once the translators get used to the fact that they should not
+                    # escape these characters any more
+                    newdata = newdata.replace("''","'")
+                    # Now escape all apostrophes as normal
+                    newdata = newdata.replace("'","''")
+
+                f = open(file[1],'w')
+                f.write(newdata)
+                f.close()
+
+            except Exception as e:
+                if isinstance(e, IOError):
+                    raise
+                else:
+                    logger.error(e)
+            else:
+                # The files were successfully opened, written to and closed.
+                pass
 
     def push(self, source=False, translations=False, force=False, resources=[], languages=[],
         skip=False, no_interactive=False):
@@ -604,13 +672,27 @@ class Project(object):
                         fileinfo = "%s;%s" % (resource_slug, slang)
                         filename = self.get_full_path(sfile)
                         self._create_resource(resource, project_slug, fileinfo, filename)
-                    self.do_url_request(
-                        'push_source', multipart=True, method="PUT",
-                        files=[(
-                                "%s;%s" % (resource_slug, slang)
-                                , self.get_full_path(sfile)
-                        )],
-                    )
+
+                    full_file_path = self.get_full_path(sfile)
+
+                    # The files are escaped in our codebase. Need to un-escape before pushing to Transifex
+                    # TODO-implement right resources
+                    if resource == 'server-dummy.Module2':
+                        self.temp_file_object = self._unescape(full_file_path)
+                        full_file_path = self.temp_file_object.name
+                    try:
+                        self.do_url_request(
+                            'push_source', multipart=True, method="PUT",
+                            files=[(
+                                       "%s;%s" % (resource_slug, slang)
+                                       , full_file_path
+                                   )],
+                            )
+                    finally:
+                        if self.temp_file_object:
+                            self.temp_file_object.close()
+                        pass
+
                 except Exception as e:
                     if isinstance(e, SSLError) or not skip:
                         raise
@@ -686,6 +768,28 @@ class Project(object):
                             raise
                         else:
                             logger.error(e)
+
+    def _unescape(self, full_file_path):
+
+        # Un-escape the file as it is in our codebase. Translators shouldn't see any escaped stuff
+        try:
+            f = open(full_file_path,'r')
+            filedata = f.read()
+            f.close()
+
+            # The crucial step: replace the two apostrophes with a single apostrophe
+            newdata = filedata.replace("''","'")
+
+            # Create a temp file but don't delete it when handle gets garbage collected as it needs to exist outside this function
+            # Need to ensure we manually delete it in the calling code!
+            with tempfile.NamedTemporaryFile(delete=False) as temp:
+                temp.write(newdata)
+                temp.seek(0)
+                logger.info(temp.read())
+        finally:
+            #TODO-handle IO exceptions
+            pass
+        return temp
 
     def delete(self, resources=[], languages=[], skip=False, force=False):
         """Delete translations."""

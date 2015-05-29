@@ -9,6 +9,7 @@ API_URLS = {
     'pull_reviewed_file': '/api/2/project/%(project)s/resource/%(resource)s/translation/%(language)s/?file&mode=reviewed',
     'pull_translator_file': '/api/2/project/%(project)s/resource/%(resource)s/translation/%(language)s/?file&mode=translator',
     'pull_developer_file': '/api/2/project/%(project)s/resource/%(resource)s/translation/%(language)s/?file&mode=default',
+    'pull_onlytranslated_file': '/api/2/project/%(project)s/resource/%(resource)s/translation/%(language)s/?file&mode=onlytranslated',
     'resource_stats': '/api/2/project/%(project)s/resource/%(resource)s/stats/',
     'create_resource': '/api/2/project/%(project)s/resources/',
     'push_source': '/api/2/project/%(project)s/resource/%(resource)s/content/',
