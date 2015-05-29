@@ -633,6 +633,8 @@ class Project(object):
             project_slug, resource_slug = resource.split('.', 1)
             files = self.get_resource_files(resource)
             slang = self.get_resource_option(resource, 'source_lang')
+            #fetch double_escape_apostrophes property and convert it to boolean
+            double_escape_apostrophes = self.get_resource_option(resource, 'double_escape_apostrophes') == "true"
             sfile = self.get_source_file(resource)
             lang_map = self.get_resource_lang_mapping(resource)
             host = self.get_resource_host(resource)
@@ -676,10 +678,9 @@ class Project(object):
                     full_file_path = self.get_full_path(sfile)
 
                     # The files are escaped in our codebase. Need to un-escape before pushing to Transifex
-                    # TODO-implement right resources
-                    if resource == 'server-dummy.Module2':
-                        self.temp_file_object = self._unescape(full_file_path)
-                        full_file_path = self.temp_file_object.name
+                    self.temp_file_object = self._unescape(full_file_path, double_escape_apostrophes)
+                    full_file_path = self.temp_file_object.name
+
                     try:
                         self.do_url_request(
                             'push_source', multipart=True, method="PUT",
@@ -691,6 +692,7 @@ class Project(object):
                     finally:
                         if self.temp_file_object:
                             self.temp_file_object.close()
+                            os.remove(full_file_path) # Tidy up
                         pass
 
                 except Exception as e:
@@ -751,15 +753,23 @@ class Project(object):
                     logger.warning(
                          msg % (color_text(remote_lang, "RED"), local_file)
                     )
+
+                    full_file_path = self.get_full_path(local_file)
+
+                    # The files are escaped in our codebase. Need to un-escape before pushing to Transifex
+                    self.temp_file_object = self._unescape(full_file_path, double_escape_apostrophes)
+                    full_file_path = self.temp_file_object.name
+
                     try:
                         self.do_url_request(
                             'push_translation', multipart=True, method='PUT',
                             files=[(
-                                    "%s;%s" % (resource_slug, remote_lang),
-                                    self.get_full_path(local_file)
-                            )], language=remote_lang
+                                       "%s;%s" % (resource_slug, remote_lang),
+                                       full_file_path
+                                   )], language=remote_lang
                         )
                         logger.debug("Translation %s pushed." % remote_lang)
+
                     except HttpNotFound:
                         if not source:
                             logger.error("Resource hasn't been created. Try pushing source file.")
@@ -768,28 +778,40 @@ class Project(object):
                             raise
                         else:
                             logger.error(e)
+                    finally:
+                        if self.temp_file_object:
+                            self.temp_file_object.close()
+                            os.remove(full_file_path) # Tidy up
 
-    def _unescape(self, full_file_path):
+    def _unescape(self, full_file_path, double_escape_apostrophes):
 
-        # Un-escape the file as it is in our codebase. Translators shouldn't see any escaped stuff
+        # Un-escape the file as it is in our codebase. Translators shouldn't see escaped stuff wherever possible
         try:
+            #logger.info("Unescaping for push...")
             f = open(full_file_path,'r')
             filedata = f.read()
             f.close()
 
-            # The crucial step: replace the two apostrophes with a single apostrophe
-            newdata = filedata.replace("''","'")
+            newdata = filedata.replace("&amp;","&") # Unescape (convert from HTML emtity to plain) any already escaped ampersands
+            if double_escape_apostrophes:
+                #logger.info("Unescaping double escaped apostrophes...")
+                newdata = newdata.replace("''","'")
 
             # Create a temp file but don't delete it when handle gets garbage collected as it needs to exist outside this function
             # Need to ensure we manually delete it in the calling code!
             with tempfile.NamedTemporaryFile(delete=False) as temp:
                 temp.write(newdata)
                 temp.seek(0)
-                logger.info(temp.read())
-        finally:
-            #TODO-handle IO exceptions
-            pass
-        return temp
+                #logger.info(temp.read())
+
+        except Exception as e:
+            if isinstance(e, IOError):
+                raise
+            else:
+                logger.error(e)
+        else:
+            # The files were successfully opened, written to and closed. Return the temp file to calling function to be cleaned up
+            return temp
 
     def delete(self, resources=[], languages=[], skip=False, force=False):
         """Delete translations."""

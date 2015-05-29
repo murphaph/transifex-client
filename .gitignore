@@ -9,3 +9,5 @@ txclib/project.py
 txclib/urls.py
 .idea/
 transifex-client.iml
+build/
+dist/
